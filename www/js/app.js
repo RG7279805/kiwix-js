@@ -36,6 +36,15 @@ import settingsStore from './lib/settingsStore.js';
 import abstractFilesystemAccess from './lib/abstractFilesystemAccess.js';
 import translateUI from './lib/translateUI.js';
 
+// events
+import events from './events/index.js';
+import searchBar from './events/home/searchBar.js';
+
+// refrences to events
+import frame from './events/global/frame.js';
+import browserUrlState from './state/url.js';
+import { searchDirEntriesFromPrefix } from './heplers/searchDirEntriesFromPrefix';
+
 if (params.abort) {
     // If the app was loaded only to pass a message from the remote code, then we exit immediately
     throw new Error('Managed error: exiting local extension code.')
@@ -70,12 +79,13 @@ var cssCache = new Map();
  *
  * @type Object
  */
-var appstate = {};
+export var appstate = {};
 
 /**
  * @type ZIMArchive
  */
-var selectedArchive = null;
+export var selectedArchive = null;
+window.selectedArchive = selectedArchive;
 
 // An object to hold the current search and its state (allows cancellation of search across modules)
 appstate['search'] = {
@@ -83,7 +93,7 @@ appstate['search'] = {
     status: '', // The status of the search: ''|'init'|'interim'|'cancelled'|'complete'
     type: '' // The type of the search: 'basic'|'full' (set automatically in search algorithm)
 };
-
+window.appstate = appstate;
 // A Boolean to store the update status of the PWA version (currently only used with Firefox Extension)
 appstate['pwaUpdateNeeded'] = false; // This will be set to true if the Service Worker has an update waiting
 
@@ -124,6 +134,7 @@ if (window.matchMedia('(prefers-color-scheme)').media === 'not all') {
         optionsToBeRemoved[i].parentNode.removeChild(optionsToBeRemoved[i]);
     }
 }
+
 // Apply previously stored appTheme
 uiUtil.applyAppTheme(params.appTheme);
 
@@ -132,93 +143,9 @@ darkPreference.onchange = function () {
     uiUtil.applyAppTheme(params.appTheme);
 }
 
-/**
- * Resize the IFrame height, so that it fills the whole available height in the window
- */
-function resizeIFrame () {
-    var headerStyles = getComputedStyle(document.getElementById('top'));
-    var iframe = document.getElementById('articleContent');
-    var region = document.getElementById('search-article');
-    if (iframe.style.display === 'none') {
-        // We are in About or Configuration, so we only set the region height
-        region.style.height = window.innerHeight + 'px';
-    } else {
-        // IE cannot retrieve computed headerStyles till the next paint, so we wait a few ticks
-        setTimeout(function () {
-            // Get  header height *including* its bottom margin
-            var headerHeight = parseFloat(headerStyles.height) + parseFloat(headerStyles.marginBottom);
-            iframe.style.height = window.innerHeight - headerHeight + 'px';
-            // We have to allow a minimum safety margin of 10px for 'iframe' and 'header' to fit within 'region'
-            region.style.height = window.innerHeight + 10 + 'px';
-        }, 100);
-    }
-}
-document.addEventListener('DOMContentLoaded', function () {
-    getDefaultLanguageAndTranslateApp();
-    resizeIFrame();
-});
-window.addEventListener('resize', resizeIFrame);
-
-// Define behavior of HTML elements
-var searchArticlesFocused = false;
-const searchArticle = document.getElementById('searchArticles')
-searchArticle.addEventListener('click', function () {
-    var prefix = document.getElementById('prefix').value;
-    // Do not initiate the same search if it is already in progress
-    if (appstate.search.prefix === prefix && !/^(cancelled|complete)$/.test(appstate.search.status)) return;
-    document.getElementById('welcomeText').style.display = 'none';
-    document.querySelector('.kiwix-alert').style.display = 'none';
-    document.getElementById('searchingArticles').style.display = '';
-    pushBrowserHistoryState(null, prefix);
-    // Initiate the search
-    searchDirEntriesFromPrefix(prefix);
-    $('.navbar-collapse').collapse('hide');
-    document.getElementById('prefix').focus();
-    // This flag is set to true in the mousedown event below
-    searchArticlesFocused = false;
-});
-searchArticle.addEventListener('mousedown', function () {
-    // We set the flag so that the blur event of #prefix can know that the searchArticles button has been clicked
-    searchArticlesFocused = true;
-});
 document.getElementById('formArticleSearch').addEventListener('submit', function () {
     document.getElementById('searchArticles').click();
 });
-
-function getDefaultLanguageAndTranslateApp () {
-    var defaultBrowserLanguage = uiUtil.getBrowserLanguage();
-    // DEV: Be sure to add supported language codes here
-    // TODO: Add a supported languages object elsewhere and use it here
-    if (!params.overrideBrowserLanguage) {
-        if (/^en|es|fr$/.test(defaultBrowserLanguage.base)) {
-            console.log('Supported default browser language is: ' + defaultBrowserLanguage.base + ' (' + defaultBrowserLanguage.locale + ')');
-        } else {
-            console.warn('Unsupported browser language! ' + defaultBrowserLanguage.base + ' (' + defaultBrowserLanguage.locale + ')');
-            console.warn('Reverting to English');
-            defaultBrowserLanguage.base = 'en';
-            defaultBrowserLanguage.name = 'GB';
-            params.overrideBrowserLanguage = 'en';
-        }
-    } else {
-        console.log('User-selected language is: ' + params.overrideBrowserLanguage);
-    }
-    // Use the override language if set, or else use the browser default
-    var languageCode = params.overrideBrowserLanguage || defaultBrowserLanguage.base;
-    translateUI.translateApp(languageCode)
-    .catch(function (err) {
-        if (languageCode !== 'en') {
-            var message = '<p>We cannot load the translation strings for language code <code>' + languageCode + '</code>';
-            // if (/^file:\/\//.test(window.location.href)) {
-            //     message += ' because you are accessing Kiwix from the file system. Try using a web server instead';
-            // }
-            message += '.</p><p>Falling back to English...</p>';
-            if (err) message += '<p>The error message was:</p><code>' + err + '</code>';
-            uiUtil.systemAlert(message);
-            document.getElementById('languageSelector').value = 'en';
-            return translateUI.translateApp('en');
-        }
-    });
-}
 
 // Add a listener for the language selection dropdown which will change the language of the app
 document.getElementById('languageSelector').addEventListener('change', function (e) {
@@ -236,7 +163,7 @@ document.getElementById('languageSelector').addEventListener('change', function 
         params.overrideBrowserLanguage = language;
         settingsStore.setItem('languageOverride', language, Infinity);
     }
-    getDefaultLanguageAndTranslateApp();
+    language.getDefaultLanguageAndTranslateApp(params);
 });
 
 const prefixElement = document.getElementById('prefix');
@@ -371,7 +298,7 @@ document.getElementById('btnHome').addEventListener('click', function (event) {
         goToMainArticle();
     }
     // Use a timeout of 400ms because uiUtil.applyAnimationToSection uses a timeout of 300ms
-    setTimeout(resizeIFrame, 400);
+    setTimeout(frame.resizeIFrame, 400);
 });
 document.getElementById('btnConfigure').addEventListener('click', function (event) {
     event.preventDefault();
@@ -388,7 +315,7 @@ document.getElementById('btnConfigure').addEventListener('click', function (even
     refreshCacheStatus();
     uiUtil.checkUpdateStatus(appstate);
     // Use a timeout of 400ms because uiUtil.applyAnimationToSection uses a timeout of 300ms
-    setTimeout(resizeIFrame, 400);
+    setTimeout(frame.resizeIFrame, 400);
 });
 document.getElementById('btnAbout').addEventListener('click', function (event) {
     event.preventDefault();
@@ -402,7 +329,7 @@ document.getElementById('btnAbout').addEventListener('click', function (event) {
     uiUtil.tabTransitionToSection('about', params.showUIAnimations);
 
     // Use a timeout of 400ms because uiUtil.applyAnimationToSection uses a timeout of 300ms
-    setTimeout(resizeIFrame, 400);
+    setTimeout(frame.resizeIFrame, 400);
 });
 document.querySelectorAll('input[name="contentInjectionMode"][type="radio"]').forEach(function (element) {
     element.addEventListener('change', function () {
@@ -1394,100 +1321,6 @@ function onKeyUpPrefix () {
     }, 500);
 }
 
-/**
- * Search the index for DirEntries with title that start with the given prefix (implemented
- * with a binary search inside the index file)
- * @param {String} prefix The string that must appear at the start of any title searched for
- */
-function searchDirEntriesFromPrefix (prefix) {
-    if (selectedArchive !== null && selectedArchive.isReady()) {
-        // Cancel the old search (zimArchive search object will receive this change)
-        appstate.search.status = 'cancelled';
-        // Initiate a new search object and point appstate.search to it (the zimArchive search object will continue to point to the old object)
-        // DEV: Technical explanation: the appstate.search is a pointer to an underlying object assigned in memory, and we are here defining a new object
-        // in memory {prefix: prefix, status: 'init', .....}, and pointing appstate.search to it; the old search object that was passed to selectedArchive
-        // (zimArchive.js) continues to exist in the scope of the functions initiated by the previous search until all Promises have returned
-        appstate.search = { prefix: prefix, status: 'init', type: '', size: params.maxSearchResultsSize };
-        var activeContent = document.getElementById('activeContent');
-        if (activeContent) activeContent.style.display = 'none';
-        selectedArchive.findDirEntriesWithPrefix(appstate.search, populateListOfArticles);
-    } else {
-        document.getElementById('searchingArticles').style.display = 'none';
-        // We have to remove the focus from the search field,
-        // so that the keyboard does not stay above the message
-        document.getElementById('searchArticles').focus();
-        uiUtil.systemAlert(translateUI.t('dialog-archive-notset-message') || 'Archive not set: please select an archive',
-            translateUI.t('dialog-archive-notset-title') || 'No archive selected').then(function () {
-            document.getElementById('btnConfigure').click();
-        });
-    }
-}
-
-/**
- * Display the list of articles with the given array of DirEntry
- * @param {Array} dirEntryArray The array of dirEntries returned from the binary search
- * @param {Object} reportingSearch The reporting search object
- */
-function populateListOfArticles (dirEntryArray, reportingSearch) {
-    // Do not allow cancelled searches to report
-    if (reportingSearch.status === 'cancelled') return;
-    var stillSearching = reportingSearch.status === 'interim';
-    var articleListHeaderMessageDiv = document.getElementById('articleListHeaderMessage');
-    var nbDirEntry = dirEntryArray ? dirEntryArray.length : 0;
-
-    var message;
-    if (stillSearching) {
-        message = 'Searching [' + reportingSearch.type + ']... found: ' + nbDirEntry;
-    } else if (nbDirEntry >= params.maxSearchResultsSize) {
-        message = 'First ' + params.maxSearchResultsSize + ' articles found (refine your search).';
-    } else {
-        message = 'Finished. ' + (nbDirEntry || 'No') + ' articles found' + (
-            reportingSearch.type === 'basic' ? ': try fewer words for full search.' : '.'
-        );
-    }
-
-    articleListHeaderMessageDiv.textContent = message;
-
-    var articleListDiv = document.getElementById('articleList');
-    var articleListDivHtml = '';
-    var listLength = dirEntryArray.length < params.maxSearchResultsSize ? dirEntryArray.length : params.maxSearchResultsSize;
-    for (var i = 0; i < listLength; i++) {
-        var dirEntry = dirEntryArray[i];
-        // NB We use encodeURIComponent rather than encodeURI here because we know that any question marks in the title are not querystrings,
-        // and should be encoded [kiwix-js #806]. DEV: be very careful if you edit the dirEntryId attribute below, because the contents must be
-        // inside double quotes (in the final HTML string), given that dirEntryStringId may contain bare apostrophes
-        // Info: encodeURIComponent encodes all characters except  A-Z a-z 0-9 - _ . ! ~ * ' ( )
-        var dirEntryStringId = encodeURIComponent(dirEntry.toStringId());
-        articleListDivHtml += '<a href="#" dirEntryId="' + dirEntryStringId +
-            '" class="list-group-item">' + dirEntry.getTitleOrUrl() + '</a>';
-    }
-
-    // innerHTML required for this line
-    articleListDiv.innerHTML = articleListDivHtml;
-    // We have to use mousedown below instead of click as otherwise the prefix blur event fires first
-    // and prevents this event from firing; note that touch also triggers mousedown
-    document.querySelectorAll('#articleList a').forEach(function (link) {
-        link.addEventListener('mousedown', function (e) {
-          // Cancel search immediately
-          appstate.search.status = 'cancelled';
-          handleTitleClick(e);
-          return false;
-        });
-      });
-    if (!stillSearching) document.getElementById('searchingArticles').style.display = 'none';
-    document.getElementById('articleListWithHeader').style.display = '';
-}
-
-/**
- * Handles the click on the title of an article in search results
- * @param {Event} event The click event to handle
- * @returns {Boolean} Always returns false for JQuery event handling
- */
-function handleTitleClick (event) {
-    var dirEntryId = decodeURIComponent(event.target.getAttribute('dirEntryId'));
-    findDirEntryFromDirEntryIdAndLaunchArticleRead(dirEntryId);
-    return false;
-}
 
 /**
  * Creates an instance of DirEntry from given dirEntryId (including resolving redirects),
@@ -1573,7 +1406,7 @@ function readArticle (dirEntry) {
                     docBody.addEventListener('drop', handleIframeDrop);
                 }
             }
-            resizeIFrame();
+            frame.resizeIFrame();
 
             if (iframeArticleContent.contentWindow) {
                 // Configure home key press to focus #prefix only if the feature is in active state
@@ -1810,7 +1643,7 @@ function displayArticleContentInIframe (dirEntry, htmlArticle) {
         // Set the requested appTheme
         uiUtil.applyAppTheme(params.appTheme);
         // Allow back/forward in browser history
-        pushBrowserHistoryState(dirEntry.namespace + '/' + dirEntry.url);
+        browserUrlState.pushBrowserHistoryState(dirEntry.namespace + '/' + dirEntry.url);
 
         parseAnchorsJQuery();
         loadImagesJQuery();
@@ -2010,7 +1843,7 @@ function displayArticleContentInIframe (dirEntry, htmlArticle) {
                 document.getElementById('searchingArticles').style.display = 'none';
                 document.getElementById('articleContent').style.display = '';
                 // We have to resize here for devices with On Screen Keyboards when loading from the article search list
-                resizeIFrame();
+                frame.resizeIFrame();
             } else {
                 updateCacheStatus(title);
             }
@@ -2085,32 +1918,6 @@ function updateCacheStatus (title) {
         title = title.replace(/[^/]+\//g, '').substring(0, 18);
         cacheBlock.textContent = (translateUI.t('spinner-caching') || 'Caching') + ' ' + title + '...';
     }
-}
-
-/**
- * Changes the URL of the browser page, so that the user might go back to it
- *
- * @param {String} title
- * @param {String} titleSearch
- */
-function pushBrowserHistoryState (title, titleSearch) {
-    var stateObj = {};
-    var urlParameters;
-    var stateLabel;
-    if (title && !(title === '')) {
-        // Prevents creating a double history for the same page
-        if (history.state && history.state.title === title) return;
-        stateObj.title = title;
-        urlParameters = '?title=' + title;
-        stateLabel = 'Wikipedia Article : ' + title;
-    } else if (titleSearch && !(titleSearch === '')) {
-        stateObj.titleSearch = titleSearch;
-        urlParameters = '?titleSearch=' + titleSearch;
-        stateLabel = 'Wikipedia search : ' + titleSearch;
-    } else {
-        return;
-    }
-    window.history.pushState(stateObj, stateLabel, urlParameters);
 }
 
 /**
